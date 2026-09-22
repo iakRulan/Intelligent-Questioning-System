@@ -1,0 +1,13 @@
+query_policy:
+  max_result_rows: 1000
+  hard_max_result_rows: 5000
+  max_result_bytes: 10485760
+  query_timeout_seconds: 20
+  explain_timeout_seconds: 5
+  max_metrics_per_query: 8
+  max_assets_per_query: 5
+  max_raw_window_hours: 168
+  max_1m_window_days: 31
+  max_5m_window_days: 180
+  max_1h_window_days: 1095
+  max_auto_repair_attempts: 1

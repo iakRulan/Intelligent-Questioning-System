@@ -1,0 +1,38 @@
+service:
+  name: smart-data-service
+  environment: development
+  timezone: Asia/Shanghai
+  host: 0.0.0.0
+  port: 8080
+
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  model: qwen-domain-v3
+  api_key: EMPTY
+  timeout_seconds: 30.0
+  max_concurrency: 4
+
+mysql:
+  dsn: mysql+aiomysql://root:password@127.0.0.1:3306/gt_health
+  pool_size: 10
+  max_overflow: 10
+
+influxdb:
+  host: http://127.0.0.1:8181
+  database: turbine
+  token: token_placeholder
+  timeout_seconds: 20.0
+
+query_policy:
+  max_result_rows: 1000
+  hard_max_result_rows: 5000
+  max_result_bytes: 10485760
+  query_timeout_seconds: 20.0
+  explain_timeout_seconds: 5.0
+  max_metrics_per_query: 8
+  max_assets_per_query: 5
+  max_raw_window_hours: 168
+  max_1m_window_days: 31
+  max_5m_window_days: 180
+  max_1h_window_days: 1095
+  max_auto_repair_attempts: 1
