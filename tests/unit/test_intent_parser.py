@@ -1,7 +1,9 @@
-import pytest
 from datetime import datetime, timezone
-from src.smart_data.pipeline.components.intent_parser import IntentParser
+
+import pytest
+
 from src.smart_data.domain.query import QueryState
+from src.smart_data.pipeline.components.intent_parser import IntentParser
 
 
 def test_parse_assets_and_metrics():
@@ -13,12 +15,13 @@ def test_parse_assets_and_metrics():
     metrics = parser.extract_metrics("帮我查一下 #1 机组和 2号机的排气温度与转速")
     assert "排气温度" in metrics
     assert "转速" in metrics
+    assert "排温" not in metrics
 
 
 def test_parse_natural_relative_time():
     parser = IntentParser()
     ref_time = datetime(2026, 9, 23, 10, 0, 0, tzinfo=timezone.utc)
-    
+
     tr_today, is_amb = parser.parse_time_range("查询今天的排温", ref_time=ref_time)
     assert not is_amb
     assert tr_today is not None
@@ -27,6 +30,11 @@ def test_parse_natural_relative_time():
     tr_last_week, _ = parser.parse_time_range("统计上周排温均值", ref_time=ref_time)
     assert tr_last_week is not None
     assert (tr_last_week.end - tr_last_week.start).days == 7
+
+    tr_recent, amb_recent = parser.parse_time_range("查询最近24小时排温", ref_time=ref_time)
+    assert amb_recent is False
+    assert tr_recent is not None
+    assert (tr_recent.end - tr_recent.start).total_seconds() == 24 * 3600
 
 
 def test_ambiguous_time_triggers_clarification():

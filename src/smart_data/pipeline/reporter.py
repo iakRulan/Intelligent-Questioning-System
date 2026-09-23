@@ -1,7 +1,13 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any
+
 from pydantic import BaseModel, Field
+
+from src.smart_data.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class SSEEvent(BaseModel):
@@ -11,13 +17,15 @@ class SSEEvent(BaseModel):
     event: str
     stage: str | None = None
     status: str = "running"
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
     progress: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class StageReporter:
-    """异步有界事件报告器，负责将管道内部状态转化为严格契约的 SSE 事件。"""
+    """异步有界事件报告器。"""
 
     STAGE_PROGRESS = {
         "intent_parsing": 15,
@@ -28,11 +36,13 @@ class StageReporter:
         "trend_analysis": 100,
     }
 
-    def __init__(self, query_id: str, trace_id: str, queue_size: int = 100):
+    def __init__(self, query_id: str, trace_id: str, queue_size: int | None = None):
         self.query_id = query_id
         self.trace_id = trace_id
-        self.queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue(maxsize=queue_size)
+        size = queue_size or settings.pipeline.event_queue_size
+        self.queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue(maxsize=size)
         self._seq = 0
+        self._closed = False
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -46,6 +56,8 @@ class StageReporter:
         payload: dict[str, Any] | None = None,
         progress: int | None = None,
     ) -> None:
+        if self._closed:
+            return
         if progress is None and stage in self.STAGE_PROGRESS:
             progress = self.STAGE_PROGRESS[stage]
         elif progress is None:
@@ -61,7 +73,17 @@ class StageReporter:
             progress=progress,
             payload=payload or {},
         )
-        await self.queue.put(event)
+        try:
+            self.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning("SSE event queue full, dropped event %s", event_type)
 
     async def accepted(self) -> None:
         await self.emit("query.accepted", status="accepted", progress=5)
@@ -94,12 +116,30 @@ class StageReporter:
         )
 
     async def result_completed(self, payload: dict[str, Any]) -> None:
-        await self.emit("result.completed", stage="trend_analysis", status="completed", progress=100, payload=payload)
+        await self.emit(
+            "result.completed",
+            stage="trend_analysis",
+            status="completed",
+            progress=100,
+            payload=payload,
+        )
 
     async def query_cancelled(self, reason: str = "Client disconnected") -> None:
         await self.emit("query.cancelled", status="cancelled", payload={"reason": reason})
 
     async def stream_end(self) -> None:
+        if self._closed:
+            return
         await self.emit("stream.end", status="finished", progress=100)
-        # 发送 None 作为结束信号
-        await self.queue.put(None)
+        self._closed = True
+        try:
+            self.queue.put_nowait(None)
+        except asyncio.QueueFull:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.queue.put_nowait(None)
+            except asyncio.QueueFull:
+                logger.warning("SSE event queue full, failed to send stream end")

@@ -1,4 +1,3 @@
-from typing import Any
 from src.smart_data.domain.query import MetricRef
 
 
@@ -85,7 +84,6 @@ class GlossaryRepository:
                 unit="μm",
                 aliases=["振动", "轴振", "瓦振", "最大振动值"],
             ),
-            # 歧义词项示例：用户提"效率"时，可匹配以下两种
             MetricDictionaryEntry(
                 point_code="GEN_EFF",
                 business_name="发电效率",
@@ -106,41 +104,29 @@ class GlossaryRepository:
 
         for entry in default_metrics:
             self._entries[entry.point_code] = entry
-            # 映射标准名
             self._add_alias(entry.business_name.lower(), entry.point_code)
             self._add_alias(entry.point_code.lower(), entry.point_code)
-            for a in entry.aliases:
-                self._add_alias(a.lower(), entry.point_code)
+            for alias in entry.aliases:
+                self._add_alias(alias.lower(), entry.point_code)
 
     def _add_alias(self, alias: str, point_code: str) -> None:
-        if alias not in self._alias_map:
-            self._alias_map[alias] = []
-        if point_code not in self._alias_map[alias]:
-            self._alias_map[alias].append(point_code)
+        bucket = self._alias_map.setdefault(alias, [])
+        if point_code not in bucket:
+            bucket.append(point_code)
+
+    def all_search_terms(self) -> list[str]:
+        return sorted(self._alias_map.keys(), key=len, reverse=True)
+
+    def get_by_code(self, point_code: str) -> MetricDictionaryEntry | None:
+        return self._entries.get(point_code)
 
     def resolve_metric(self, term: str) -> list[MetricDictionaryEntry]:
-        """依据自然语言术语检索匹配的指标条目。
-
-        Returns:
-            若返回 1 个元素则为唯一匹配；
-            若返回多个元素则代表存在歧义（需澄清）；
-            若返回 0 个代表未识别指标。
-        """
+        """精确匹配标准名、测点编码或别名。多个命中代表歧义，必须澄清。"""
         clean_term = term.strip().lower()
-
-        # 1. 尝试精确查找别名映射
-        if clean_term in self._alias_map:
-            matched_codes = self._alias_map[clean_term]
-            return [self._entries[code] for code in matched_codes if code in self._entries]
-
-        # 2. 尝试子串模糊匹配
-        matches: set[str] = set()
-        for alias, codes in self._alias_map.items():
-            if clean_term in alias or alias in clean_term:
-                matches.update(codes)
-
-        return [self._entries[code] for code in matches if code in self._entries]
+        if not clean_term:
+            return []
+        codes = self._alias_map.get(clean_term, [])
+        return [self._entries[code] for code in codes if code in self._entries]
 
 
-# 默认单例
 default_glossary = GlossaryRepository()

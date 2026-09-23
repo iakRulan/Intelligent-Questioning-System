@@ -1,12 +1,22 @@
+from datetime import datetime, timezone
 from typing import Literal
-from datetime import datetime
+
 from pydantic import BaseModel, Field
+
+
+def to_utc_iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class TimeRange(BaseModel):
     start: datetime
     end: datetime
     timezone: str = "Asia/Shanghai"
+
+    def as_utc_iso(self) -> tuple[str, str]:
+        return to_utc_iso(self.start), to_utc_iso(self.end)
 
 
 class QueryIntent(BaseModel):

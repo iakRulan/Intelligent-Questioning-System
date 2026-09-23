@@ -1,5 +1,9 @@
+from __future__ import annotations
+
+import os
 from pathlib import Path
 from typing import Any
+
 import yaml
 from pydantic import BaseModel, Field
 
@@ -10,6 +14,7 @@ class ServiceConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     host: str = "0.0.0.0"
     port: int = 8080
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
 
 class LLMConfig(BaseModel):
@@ -48,27 +53,94 @@ class QueryPolicy(BaseModel):
     max_auto_repair_attempts: int = 1
 
 
+class PipelineConfig(BaseModel):
+    version: str = "0.1.0"
+    telemetry_enabled: bool = False
+    event_queue_size: int = 100
+    mode: str = "mock"
+
+
 class AppConfig(BaseModel):
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     mysql: MySQLConfig = Field(default_factory=MySQLConfig)
     influxdb: InfluxDBConfig = Field(default_factory=InfluxDBConfig)
     query_policy: QueryPolicy = Field(default_factory=QueryPolicy)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+
+
+def _deep_update(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_update(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with open(path, "r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件必须是 YAML 映射: {path}")
+    return data
+
+
+def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
+    env_map = {
+        "SMART_DATA_ENV": ("service", "environment"),
+        "SMART_DATA_MODE": ("pipeline", "mode"),
+        "LLM_BASE_URL": ("llm", "base_url"),
+        "LLM_MODEL": ("llm", "model"),
+        "LLM_API_KEY": ("llm", "api_key"),
+        "MYSQL_DSN": ("mysql", "dsn"),
+        "INFLUXDB_HOST": ("influxdb", "host"),
+        "INFLUXDB_DATABASE": ("influxdb", "database"),
+        "INFLUXDB_TOKEN": ("influxdb", "token"),
+    }
+    for env_name, (section, field) in env_map.items():
+        value = os.getenv(env_name)
+        if value:
+            data.setdefault(section, {})[field] = value
+    return data
+
+
+def _is_placeholder_secret(value: str) -> bool:
+    lowered = (value or "").strip().lower()
+    return lowered in {"", "empty", "token_placeholder", "changeme", "password"}
+
+
+def validate_startup(config: AppConfig) -> None:
+    os.environ["HAYSTACK_TELEMETRY_ENABLED"] = "False"
+    if config.pipeline.telemetry_enabled:
+        raise SystemExit("Haystack 遥测必须关闭：pipeline.telemetry_enabled=false")
+
+    live_mode = config.pipeline.mode not in {"mock", "development"}
+    production = config.service.environment == "production"
+    if production and live_mode:
+        if _is_placeholder_secret(config.influxdb.token):
+            raise SystemExit("生产 live 模式缺少 INFLUXDB_TOKEN，拒绝带病启动")
+        if _is_placeholder_secret(config.llm.api_key) and "127.0.0.1" not in config.llm.base_url:
+            raise SystemExit("生产 live 模式缺少 LLM_API_KEY，拒绝带病启动")
 
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
-    if config_path is None:
-        default_yaml = Path(__file__).resolve().parent.parent.parent / "configs" / "application.yaml"
-        if default_yaml.exists():
-            config_path = default_yaml
+    root = Path(__file__).resolve().parent.parent.parent
+    app_yaml = Path(config_path) if config_path else root / "configs" / "application.yaml"
+    policy_yaml = root / "configs" / "policies.yaml"
 
     data: dict[str, Any] = {}
-    if config_path and Path(config_path).exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+    if app_yaml.exists():
+        data = _load_yaml(app_yaml)
+    if policy_yaml.exists():
+        _deep_update(data, _load_yaml(policy_yaml))
+    _apply_env_overrides(data)
 
-    return AppConfig(**data)
+    config = AppConfig(**data)
+    validate_startup(config)
+    return config
 
 
-# 全局配置单例
 settings = load_config()
