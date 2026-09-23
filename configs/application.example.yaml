@@ -7,21 +7,14 @@ service:
   cors_origins:
     - "*"
 
-llm:
-  base_url: http://127.0.0.1:8000/v1
-  model: qwen-domain-v3
-  api_key: EMPTY
-  timeout_seconds: 30.0
-  max_concurrency: 4
-
 mysql:
-  dsn: mysql+aiomysql://root:password@127.0.0.1:3306/gt_health
+  dsn: mysql+pymysql://user:password@127.0.0.1:3306/gt_health
   pool_size: 10
   max_overflow: 10
 
 influxdb:
   host: http://127.0.0.1:8181
-  database: turbine
+  database: szt_flux
   token: token_placeholder
   timeout_seconds: 20.0
 
@@ -29,4 +22,4 @@ pipeline:
   version: 0.1.0
   telemetry_enabled: false
   event_queue_size: 100
-  mode: mock
+  mode: auto

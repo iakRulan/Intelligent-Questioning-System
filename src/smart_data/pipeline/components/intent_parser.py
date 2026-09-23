@@ -37,7 +37,6 @@ class IntentParser:
     ):
         self.default_timezone = default_timezone
         self.glossary = glossary or default_glossary
-        self.metric_keywords = self.glossary.all_search_terms()
 
     def _zone(self, tz_name: str):
         try:
@@ -121,7 +120,7 @@ class IntentParser:
     def extract_metrics(self, text: str) -> list[str]:
         lowered = text.lower()
         matches: list[tuple[int, int, str]] = []
-        for keyword in self.metric_keywords:
+        for keyword in self.glossary.all_search_terms():
             needle = keyword.lower()
             start = 0
             while True:

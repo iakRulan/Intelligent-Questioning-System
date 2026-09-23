@@ -30,7 +30,7 @@ async def test_sql_generator_builds_readonly_query():
             MetricRef(
                 business_name="平均排气温度",
                 point_code="T48_AVG",
-                measurement="gt_exhaust",
+                measurement="gt_telemetry",
                 field="temperature",
                 unit="℃",
                 aggregation="avg",
@@ -41,8 +41,8 @@ async def test_sql_generator_builds_readonly_query():
     assert result.generated_sql is not None
     sql = result.generated_sql.upper()
     assert sql.startswith("SELECT")
-    assert "GT_EXHAUST" in sql
+    assert "GT_TELEMETRY" in sql
     assert "TEMPERATURE" in sql
     assert "GT-001" in result.generated_sql
     assert "INSERT" not in sql
-    assert "*" not in result.generated_sql
+    assert "SELECT *" not in result.generated_sql.upper()

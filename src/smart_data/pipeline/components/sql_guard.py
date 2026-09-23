@@ -41,6 +41,9 @@ FORBIDDEN_EXPRESSIONS = tuple(
 ALLOWED_ANONYMOUS_FUNCTIONS = {
     "date_bin",
     "date_trunc",
+    "date_format",
+    "from_unixtime",
+    "unix_timestamp",
     "date_add",
     "date_diff",
     "to_timestamp",

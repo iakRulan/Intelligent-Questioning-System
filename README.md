@@ -2,7 +2,7 @@
 
 面向燃气轮机健康管理系统的时序数据智能问数（Text2SQL / NL2SQL）后端微服务。
 
-本服务基于 **FastAPI + 确定性六步管道** 构建。开发阶段默认 `pipeline.mode=mock`：不连接真实 MySQL / InfluxDB / 大模型，也能完整跑通意图解析、语义映射、SQL 生成、安全校验、模拟查询与趋势分析，并通过 SSE 输出契约事件。
+本服务基于 **FastAPI + 确定性六步管道** 构建。默认 `pipeline.mode=auto`：启动时自动接入 MySQL（指标字典 + `gt_telemetry` 时序）和 InfluxDB v3；都不可用时回退 mock。自动化测试固定走 mock。
 
 ---
 
@@ -16,7 +16,7 @@
    - `data_query`：开发阶段输出确定性模拟时序数据；
    - `trend_analysis`：统计量、图表 DSL 与区分事实/说明的结论。
 2. **先澄清后执行**：机组、指标或时间不完整时下发 `clarification.required` 并结束本轮 SSE；客户端携带 `clarification_id` 与答案重新提交。
-3. **开发可独立运行**：无需外部数据源即可联调前端与契约测试。
+3. **数据库接入**：MySQL 库 `gt_health` 存放指标字典、审计与样例时序；InfluxDB v3 通过 HTTP SQL（`/api/v3/query_sql`）只读查询。
 
 ---
 
@@ -41,6 +41,12 @@ curl -N -X POST "http://localhost:8080/api/v1/nl2sql/query" \
        "question": "帮我查询 GT-001 今天的平均排气温度",
        "timezone": "Asia/Shanghai"
      }'
+```
+
+首次启动会自动创建 `gt_health` 库表并写入近 14 天 GT-001 / GT-002 样例时序。也可手动初始化：
+
+```bash
+.venv/Scripts/python.exe scripts/init_db.py
 ```
 
 开发环境可用 `Authorization: Bearer dev:user_default:GT-001,GT-002` 指定用户与机组权限域。未传令牌时默认拥有 GT-001、GT-002。

@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import re
+from datetime import datetime, timezone
 
 from src.smart_data.config import settings
 from src.smart_data.domain.errors import SQLSecurityError
 from src.smart_data.domain.query import QueryState
 from src.smart_data.pipeline.components.sql_guard import require_ident
 from src.smart_data.pipeline.reporter import StageReporter
+from src.smart_data.runtime import query_backend
 
 _ASSET_SQL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class SQLGenerator:
-    """阶段三：面向 InfluxDB v3 的确定性 SQL 生成。开发阶段不调用大模型。"""
+    """阶段三：按当前查询后端生成只读 SQL。"""
 
     def __init__(self, prompt_version: str = "sql-gen-v1.0", model_version: str = "qwen-domain-v3"):
         self.prompt_version = prompt_version
@@ -20,6 +24,7 @@ class SQLGenerator:
         if not state.metrics or not state.intent or not state.intent.time_range:
             return None
 
+        dialect = _sql_dialect()
         primary_table = state.metrics[0].measurement
         table_metrics = [metric for metric in state.metrics if metric.measurement == primary_table]
         skipped = len(state.metrics) - len(table_metrics)
@@ -32,7 +37,8 @@ class SQLGenerator:
         except SQLSecurityError:
             return None
 
-        start_iso, end_iso = state.intent.time_range.as_utc_iso()
+        start_iso = _sql_time_literal(state.intent.time_range.start, dialect)
+        end_iso = _sql_time_literal(state.intent.time_range.end, dialect)
         where_clauses = [f"time >= '{start_iso}'", f"time < '{end_iso}'"]
 
         assets = [asset for asset in state.intent.asset_ids if _ASSET_SQL_RE.match(asset)]
@@ -52,27 +58,24 @@ class SQLGenerator:
             state.intent.time_range.end - state.intent.time_range.start
         ).total_seconds() / 3600.0
         group_by = list(state.intent.group_by)
-        force_agg = window_hours > settings.query_policy.max_raw_window_hours
-        if force_agg and aggregation is None:
+        if window_hours > settings.query_policy.max_raw_window_hours and aggregation is None:
             aggregation = "AVG"
             state.warnings.append("原始时间窗超过策略上限，已自动改为按窗口聚合")
 
-        interval = _bin_interval(window_hours, group_by)
-        select_parts: list[str]
-        group_sql = ""
+        include_asset = len(assets) > 1 or "asset" in group_by
         if aggregation:
-            select_parts = [
-                f"DATE_BIN(INTERVAL '{interval}', time, TIMESTAMP '1970-01-01 00:00:00Z') AS time"
-            ]
-            if len(assets) > 1 or "asset" in group_by:
+            time_expr = _time_bucket_expr(dialect, window_hours, group_by)
+            select_parts = [f"{time_expr} AS time"]
+            if include_asset:
                 select_parts.append("asset_id")
             for field in fields:
                 select_parts.append(f"{aggregation}({field}) AS {field}")
-            group_sql = " GROUP BY 1"
-            if "asset_id" in select_parts:
+            group_sql = f" GROUP BY {time_expr}"
+            if include_asset:
                 group_sql += ", asset_id"
         else:
             select_parts = ["time", "asset_id", *fields]
+            group_sql = ""
 
         return (
             f"SELECT {', '.join(select_parts)} "
@@ -83,8 +86,9 @@ class SQLGenerator:
         )
 
     async def run(self, state: QueryState, reporter: StageReporter | None = None) -> QueryState:
+        dialect = _sql_dialect()
         if reporter:
-            await reporter.stage_started("sql_generation", {"target_dialect": "InfluxDB_v3_SQL"})
+            await reporter.stage_started("sql_generation", {"target_dialect": dialect})
 
         if not state.intent or state.intent.needs_clarification or state.error_code:
             return state
@@ -106,9 +110,26 @@ class SQLGenerator:
                 {
                     "generated_sql": state.generated_sql,
                     "model_version": state.model_version,
+                    "dialect": dialect,
                 },
             )
         return state
+
+
+def _sql_dialect() -> str:
+    if query_backend in {"mysql", "influx"}:
+        return query_backend
+    if settings.pipeline.mode in {"mysql", "influx"}:
+        return settings.pipeline.mode
+    return "mysql"
+
+
+def _sql_time_literal(value: datetime, dialect: str) -> str:
+    moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    utc = moment.astimezone(timezone.utc)
+    if dialect == "mysql":
+        return utc.strftime("%Y-%m-%d %H:%M:%S")
+    return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _normalize_agg(value: str | None) -> str | None:
@@ -124,13 +145,24 @@ def _normalize_agg(value: str | None) -> str | None:
     return mapping.get(value.lower())
 
 
-def _bin_interval(window_hours: float, group_by: list[str]) -> str:
+def _time_bucket_expr(dialect: str, window_hours: float, group_by: list[str]) -> str:
+    if dialect == "mysql":
+        if "day" in group_by or window_hours > 24 * 31:
+            seconds = 86400
+        elif "hour" in group_by or window_hours > 24:
+            seconds = 3600
+        else:
+            seconds = 300
+        return f"FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(time) / {seconds}) * {seconds})"
+
     if "hour" in group_by:
-        return "1 hour"
-    if "day" in group_by:
-        return "1 day"
-    if window_hours <= 24:
-        return "5 minutes"
-    if window_hours <= 24 * 31:
-        return "1 hour"
-    return "1 day"
+        interval = "1 hour"
+    elif "day" in group_by:
+        interval = "1 day"
+    elif window_hours <= 24:
+        interval = "5 minutes"
+    elif window_hours <= 24 * 31:
+        interval = "1 hour"
+    else:
+        interval = "1 day"
+    return f"DATE_BIN(INTERVAL '{interval}', time, TIMESTAMP '1970-01-01 00:00:00Z')"

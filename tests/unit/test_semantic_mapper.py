@@ -27,7 +27,7 @@ async def test_semantic_mapper_maps_alias_successfully():
     res_state = await mapper.run(state)
     assert len(res_state.metrics) == 1
     assert res_state.metrics[0].point_code == "T48_AVG"
-    assert res_state.metrics[0].measurement == "gt_exhaust"
+    assert res_state.metrics[0].measurement == "gt_telemetry"
     assert res_state.metrics[0].field == "temperature"
 
 

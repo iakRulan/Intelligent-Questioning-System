@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,8 +8,16 @@ from src.smart_data.api.exception_handlers import register_exception_handlers
 from src.smart_data.api.v1 import v1_router
 from src.smart_data.api.v1.health import live_payload, ready_payload
 from src.smart_data.config import settings
+from src.smart_data.startup import startup_datasources
 
 os.environ.setdefault("HAYSTACK_TELEMETRY_ENABLED", "False")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup_datasources()
+    yield
+
 
 app = FastAPI(
     title="Intelligent Questioning System (智能问数服务)",
@@ -16,6 +25,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 register_exception_handlers(app)
@@ -43,10 +53,13 @@ async def root_ready():
 
 @app.get("/")
 async def root():
+    from src.smart_data.runtime import query_backend
+
     return {
         "service": settings.service.name,
         "version": "0.1.0",
         "mode": settings.pipeline.mode,
+        "query_backend": query_backend,
         "docs": "/docs",
         "endpoints": {
             "query_sse": "POST /api/v1/nl2sql/query",

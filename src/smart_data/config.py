@@ -32,8 +32,8 @@ class MySQLConfig(BaseModel):
 
 
 class InfluxDBConfig(BaseModel):
-    host: str = "http://127.0.0.1:8181"
-    database: str = "turbine"
+    host: str = "http://tddb.a1.luyouxia.net:26305"
+    database: str = "szt_flux"
     token: str = "token_placeholder"
     timeout_seconds: float = 20.0
 
@@ -57,7 +57,7 @@ class PipelineConfig(BaseModel):
     version: str = "0.1.0"
     telemetry_enabled: bool = False
     event_queue_size: int = 100
-    mode: str = "mock"
+    mode: str = "auto"
 
 
 class AppConfig(BaseModel):
@@ -126,8 +126,21 @@ def validate_startup(config: AppConfig) -> None:
             raise SystemExit("生产 live 模式缺少 LLM_API_KEY，拒绝带病启动")
 
 
+def _load_dotenv(root: Path) -> None:
+    env_file = root / ".env"
+    if not env_file.exists():
+        return
+    for raw in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def load_config(config_path: str | Path | None = None) -> AppConfig:
     root = Path(__file__).resolve().parent.parent.parent
+    _load_dotenv(root)
     app_yaml = Path(config_path) if config_path else root / "configs" / "application.yaml"
     policy_yaml = root / "configs" / "policies.yaml"
 

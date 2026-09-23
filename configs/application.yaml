@@ -15,21 +15,21 @@ llm:
   max_concurrency: 4
 
 mysql:
-  dsn: mysql+aiomysql://root:password@127.0.0.1:3306/gt_health
+  dsn: mysql+pymysql://root:1234qwer@mysqldb.k3.luyouxia.net:41058/gt_health
   pool_size: 10
   max_overflow: 10
 
 influxdb:
-  host: http://127.0.0.1:8181
-  database: turbine
-  token: token_placeholder
+  host: http://tddb.a1.luyouxia.net:26305
+  database: szt_flux
+  token: apiv3_kKzYKKP1x2Ae56apRuEmEJa9qv8hJwUGC4JghJ2SVo-IPtiREm20ep-M8BTOaULr5eKBynPe6TuvdM2VbdlxLg
   timeout_seconds: 20.0
 
 pipeline:
   version: 0.1.0
   telemetry_enabled: false
   event_queue_size: 100
-  mode: mock
+  mode: auto
 
 query_policy:
   max_result_rows: 1000
