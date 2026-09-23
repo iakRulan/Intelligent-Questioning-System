@@ -13,6 +13,32 @@ def test_median_even_count():
     assert stats.sample_count == 4
 
 
+def test_resolve_aliased_numeric_field():
+    from src.smart_data.domain.query import MetricRef, QueryState
+    from src.smart_data.pipeline.components.trend_analyzer import TrendAnalyzer, _resolve_value_field
+
+    state = QueryState(
+        query_id="q",
+        trace_id="t",
+        user_id="u",
+        question="q",
+        metrics=[
+            MetricRef(
+                business_name="平均排气温度",
+                point_code="T48_AVG",
+                measurement="gt_telemetry",
+                field="temperature",
+                unit="℃",
+            )
+        ],
+        raw_records=[{"time": "2026-09-23T00:00:00Z", "avg_t48": 520.1}],
+        row_count=1,
+    )
+    assert _resolve_value_field(state) == "avg_t48"
+    stats = TrendAnalyzer().calculate_statistics(state.raw_records, "avg_t48")
+    assert stats.mean == 520.1
+
+
 def test_empty_statistics():
     analyzer = TrendAnalyzer()
     stats = analyzer.calculate_statistics([], "temperature")

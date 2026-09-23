@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ from src.smart_data.pipeline.reporter import StageReporter
 from src.smart_data.runtime import query_backend
 
 _ASSET_SQL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+logger = logging.getLogger(__name__)
 
 
 class SQLGenerator:
@@ -93,7 +95,17 @@ class SQLGenerator:
         if not state.intent or state.intent.needs_clarification or state.error_code:
             return state
 
-        sql = self.build_deterministic_sql(state)
+        llm_used = False
+        sql = await self._llm_sql(state, dialect)
+        if sql:
+            llm_used = True
+            state.prompt_versions["sql_generation"] = "sql_generation-v1"
+            state.model_version = settings.llm.model
+        else:
+            sql = self.build_deterministic_sql(state)
+            state.prompt_versions.setdefault("sql_generation", self.prompt_version)
+            if not state.model_version:
+                state.model_version = settings.llm.model if llm_used else self.model_version
         if not sql:
             state.error_code = "SDQ-422-SQL"
             state.error_message = "无法根据当前语义上下文生成合法的时序查询 SQL"
@@ -102,8 +114,6 @@ class SQLGenerator:
             return state
 
         state.generated_sql = sql
-        state.prompt_versions["sql_generation"] = self.prompt_version
-        state.model_version = self.model_version
         if reporter:
             await reporter.stage_completed(
                 "sql_generation",
@@ -111,9 +121,85 @@ class SQLGenerator:
                     "generated_sql": state.generated_sql,
                     "model_version": state.model_version,
                     "dialect": dialect,
+                    "llm_used": llm_used,
                 },
             )
         return state
+
+    async def _llm_sql(self, state: QueryState, dialect: str) -> str | None:
+        from src.smart_data.infrastructure.llm import LLMError, get_llm_client
+        from src.smart_data.infrastructure.llm.prompts import load_prompt
+        from src.smart_data.pipeline.components.sql_guard import SQLGuard
+
+        client = get_llm_client()
+        if client is None or not state.intent or not state.intent.time_range:
+            return None
+
+        start_iso = _sql_time_literal(state.intent.time_range.start, dialect)
+        end_iso = _sql_time_literal(state.intent.time_range.end, dialect)
+        metric_lines = "\n".join(
+            f"- {item.business_name} / {item.point_code} / 表 {item.measurement} / 字段 {item.field} / 单位 {item.unit or ''}"
+            for item in state.metrics
+        )
+        user_prompt = (
+            f"方言: {dialect}\n"
+            f"授权机组: {', '.join(state.intent.asset_ids)}\n"
+            f"机组过滤字段必须使用 asset_id，禁止 unit_id。\n"
+            f"时间范围 UTC 左闭右开: {start_iso} ~ {end_iso}\n"
+            f"聚合: {state.intent.aggregation or '无'}\n"
+            f"分组: {', '.join(state.intent.group_by) or '无'}\n"
+            f"已映射指标:\n{metric_lines}\n"
+            f"用户问题: {state.question}\n"
+            "结果要给趋势图使用：SELECT 必须包含 time 列；聚合时按时间桶 GROUP BY time，不要只返回一个标量。\n"
+            '只输出 JSON，keys 为 sql、reasoning_summary、used_metrics、assumptions。'
+        )
+        messages = [
+            {"role": "system", "content": load_prompt("sql_generation")},
+            {"role": "user", "content": user_prompt},
+        ]
+        allowed_tables = {item.measurement.lower() for item in state.metrics}
+        allowed_columns = {item.field.lower() for item in state.metrics} | {"time", "asset_id"}
+        guard = SQLGuard()
+        last_sql = None
+        last_reasons: list[str] = []
+        attempts = settings.query_policy.max_auto_repair_attempts + 1
+        for index in range(attempts):
+            try:
+                if index > 0:
+                    messages.append({"role": "assistant", "content": last_sql or ""})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "上一版 SQL 未通过安全校验：" + "; ".join(last_reasons) + "。请只输出修正后的 JSON。",
+                        }
+                    )
+                payload = await client.chat_json(
+                    messages,
+                    temperature=0.0,
+                    max_tokens=1536,
+                    trace_id=state.trace_id,
+                    operation="sql_generation",
+                )
+            except (LLMError, Exception) as exc:
+                logger.warning("SQL 模型生成失败: %s", exc)
+                return None
+            candidate = str(payload.get("sql") or "").strip()
+            if not candidate:
+                return None
+            last_sql = candidate
+            ok, _safe, reasons = guard.validate_and_rewrite(
+                candidate,
+                start_time_iso=start_iso,
+                end_time_iso=end_iso,
+                allowed_tables=allowed_tables,
+                allowed_columns=allowed_columns,
+                allowed_assets=list(state.intent.asset_ids),
+                enforce_whitelist=True,
+            )
+            if ok:
+                return candidate
+            last_reasons = reasons
+        return None
 
 
 def _sql_dialect() -> str:

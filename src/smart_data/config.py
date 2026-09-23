@@ -18,11 +18,13 @@ class ServiceConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    base_url: str = "http://127.0.0.1:8000/v1"
-    model: str = "qwen-domain-v3"
+    enabled: bool = True
+    base_url: str = "https://api.deepseek.com/v1"
+    model: str = "deepseek-flash"
     api_key: str = "EMPTY"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 45.0
     max_concurrency: int = 4
+    reasoning_effort: str = "low"
 
 
 class MySQLConfig(BaseModel):
@@ -95,6 +97,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         "LLM_BASE_URL": ("llm", "base_url"),
         "LLM_MODEL": ("llm", "model"),
         "LLM_API_KEY": ("llm", "api_key"),
+        "LLM_REASONING_EFFORT": ("llm", "reasoning_effort"),
         "MYSQL_DSN": ("mysql", "dsn"),
         "INFLUXDB_HOST": ("influxdb", "host"),
         "INFLUXDB_DATABASE": ("influxdb", "database"),
@@ -104,6 +107,9 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         value = os.getenv(env_name)
         if value:
             data.setdefault(section, {})[field] = value
+    enabled = os.getenv("SMART_DATA_LLM_ENABLED")
+    if enabled is not None:
+        data.setdefault("llm", {})["enabled"] = enabled.strip().lower() in {"1", "true", "yes", "on"}
     return data
 
 

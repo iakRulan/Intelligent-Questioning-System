@@ -8,11 +8,13 @@ service:
     - "*"
 
 llm:
-  base_url: http://127.0.0.1:8000/v1
-  model: qwen-domain-v3
-  api_key: EMPTY
-  timeout_seconds: 30.0
+  enabled: true
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-flash
+  api_key: sk-465349aaed3847699d3fe3eaf77d66c6
+  timeout_seconds: 45.0
   max_concurrency: 4
+  reasoning_effort: low
 
 mysql:
   dsn: mysql+pymysql://root:1234qwer@mysqldb.k3.luyouxia.net:41058/gt_health

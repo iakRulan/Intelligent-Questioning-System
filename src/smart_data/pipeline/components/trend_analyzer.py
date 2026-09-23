@@ -77,6 +77,38 @@ class TrendAnalyzer:
             sampling={"applied": state.truncated, "method": "server_downsample" if state.truncated else None},
         )
 
+    async def _llm_conclusion(
+        self, state: QueryState, stats: MetricStatistics, metric_name: str, unit: str
+    ) -> str | None:
+        from src.smart_data.infrastructure.llm import LLMError, get_llm_client
+        from src.smart_data.infrastructure.llm.prompts import load_prompt
+
+        client = get_llm_client()
+        if client is None:
+            return None
+        summary = {
+            "assets": state.intent.asset_ids if state.intent else [],
+            "metric": metric_name,
+            "unit": unit,
+            "statistics": stats.model_dump(),
+            "row_count": state.row_count,
+        }
+        try:
+            payload = await client.chat_json(
+                [
+                    {"role": "system", "content": load_prompt("conclusion")},
+                    {"role": "user", "content": f"统计摘要：{summary}"},
+                ],
+                temperature=0.15,
+                max_tokens=1024,
+                trace_id=state.trace_id,
+                operation="conclusion",
+            )
+        except (LLMError, Exception):
+            return None
+        text = str(payload.get("conclusion") or "").strip()
+        return text or None
+
     def generate_conclusion(self, state: QueryState, stats: MetricStatistics, metric_name: str, unit: str) -> str:
         asset_str = "、".join(state.intent.asset_ids) if state.intent and state.intent.asset_ids else "目标机组"
         if stats.sample_count == 0:
@@ -103,13 +135,15 @@ class TrendAnalyzer:
             return state
 
         primary_metric = state.metrics[0] if state.metrics else None
-        field = primary_metric.field if primary_metric else "value"
+        field = _resolve_value_field(state)
         metric_name = primary_metric.business_name if primary_metric else "时序指标"
         unit = primary_metric.unit if primary_metric else ""
 
         stats = self.calculate_statistics(state.raw_records, field)
         chart = self.generate_chart_dsl(state, field)
-        conclusion = self.generate_conclusion(state, stats, metric_name, unit)
+        conclusion = await self._llm_conclusion(state, stats, metric_name, unit)
+        if not conclusion:
+            conclusion = self.generate_conclusion(state, stats, metric_name, unit)
 
         state.statistics = stats.model_dump()
         state.visualization = chart.model_dump()
@@ -150,3 +184,16 @@ class TrendAnalyzer:
             await reporter.stage_completed("trend_analysis", {"statistics": state.statistics, "row_count": state.row_count})
             await reporter.result_completed(payload)
         return state
+
+
+def _resolve_value_field(state: QueryState) -> str:
+    preferred = state.metrics[0].field if state.metrics else "value"
+    if not state.raw_records:
+        return preferred
+    row = state.raw_records[0]
+    if preferred in row:
+        return preferred
+    for key, value in row.items():
+        if key not in {"time", "asset_id"} and isinstance(value, (int, float)):
+            return key
+    return preferred

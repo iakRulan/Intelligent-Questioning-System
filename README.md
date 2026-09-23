@@ -17,6 +17,7 @@
    - `trend_analysis`：统计量、图表 DSL 与区分事实/说明的结论。
 2. **先澄清后执行**：机组、指标或时间不完整时下发 `clarification.required` 并结束本轮 SSE；客户端携带 `clarification_id` 与答案重新提交。
 3. **数据库接入**：MySQL 库 `gt_health` 存放指标字典、审计与样例时序；InfluxDB v3 通过 HTTP SQL（`/api/v3/query_sql`）只读查询。
+4. **DeepSeek Flash**：意图解析、SQL 生成、趋势结论默认调用 `https://api.deepseek.com/v1` 的 `deepseek-flash`；失败时回退确定性规则，SQL 仍必须经过安全网关。
 
 ---
 

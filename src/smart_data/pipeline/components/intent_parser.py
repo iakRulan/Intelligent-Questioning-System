@@ -11,6 +11,29 @@ from src.smart_data.infrastructure.database.glossary_repo import GlossaryReposit
 from src.smart_data.infrastructure.session_store import ClarificationContext, clarification_store
 from src.smart_data.pipeline.reporter import StageReporter
 
+_VALID_OPS = {"query", "aggregate", "compare", "extreme", "correlation"}
+_AGG_NORMALIZE = {
+    "avg": "avg",
+    "average": "avg",
+    "mean": "avg",
+    "平均": "avg",
+    "均值": "avg",
+    "max": "max",
+    "maximum": "max",
+    "最高": "max",
+    "最大": "max",
+    "峰值": "max",
+    "min": "min",
+    "minimum": "min",
+    "最低": "min",
+    "最小": "min",
+    "sum": "sum",
+    "总和": "sum",
+    "累计": "sum",
+    "count": "count",
+    "次数": "count",
+}
+
 ASSET_TOKEN_RE = re.compile(r"(gt[-_]?\d+|#\d+|\d+号机(?:组)?|\d+号)", re.IGNORECASE)
 RELATIVE_SPAN_RE = re.compile(r"(?:最近|过去|近)\s*(\d+)\s*(分钟|小时|天|周)")
 AGG_KEYWORDS = {
@@ -162,16 +185,57 @@ class IntentParser:
         metrics = self.extract_metrics(state.question)
         aggregation = self.extract_aggregation(state.question)
         group_by = self.extract_group_by(state.question)
+        llm_used = False
 
-        operation: str = "query"
-        if any(word in state.question for word in ["相关", "相关性", "联动"]):
-            operation = "correlation"
-        elif len(assets) > 1 or "对比" in state.question:
-            operation = "compare"
-        elif any(word in state.question for word in ["最高", "最大", "最低", "最小", "极值", "峰值"]):
-            operation = "extreme"
-        elif aggregation is not None:
-            operation = "aggregate"
+        llm_intent = await self._llm_intent(state)
+        if llm_intent:
+            llm_used = True
+            state.prompt_versions["intent"] = "intent-v1"
+            from src.smart_data.config import settings as app_settings
+
+            state.model_version = state.model_version or app_settings.llm.model
+            op = str(llm_intent.get("operation") or "").strip().lower()
+            if op in _VALID_OPS:
+                operation_from_llm = op
+            else:
+                operation_from_llm = None
+            llm_assets = []
+            for token in llm_intent.get("asset_ids") or []:
+                normalized = _normalize_asset(str(token))
+                if normalized and normalized not in llm_assets:
+                    llm_assets.append(normalized)
+            if llm_assets:
+                assets = list(dict.fromkeys([*llm_assets, *assets]))
+            llm_metrics = [str(item).strip() for item in (llm_intent.get("metric_terms") or []) if str(item).strip()]
+            if llm_metrics:
+                metrics = list(dict.fromkeys([*llm_metrics, *metrics]))
+            llm_agg = _AGG_NORMALIZE.get(str(llm_intent.get("aggregation") or "").strip().lower())
+            if llm_agg:
+                aggregation = llm_agg
+            llm_group = [item for item in (llm_intent.get("group_by") or []) if item in {"day", "hour", "asset"}]
+            if llm_group:
+                group_by = list(dict.fromkeys([*group_by, *llm_group]))
+            relative_time = str(llm_intent.get("relative_time") or "").strip()
+            if time_range is None and relative_time:
+                time_range, is_time_ambiguous = self.parse_time_range(relative_time, tz_name=tz_name)
+            operation = operation_from_llm or "query"
+        else:
+            operation = "query"
+
+        if not llm_used:
+            if any(word in state.question for word in ["相关", "相关性", "联动"]):
+                operation = "correlation"
+            elif len(assets) > 1 or "对比" in state.question:
+                operation = "compare"
+            elif any(word in state.question for word in ["最高", "最大", "最低", "最小", "极值", "峰值"]):
+                operation = "extreme"
+            elif aggregation is not None:
+                operation = "aggregate"
+        elif operation == "query":
+            if len(assets) > 1:
+                operation = "compare"
+            elif aggregation is not None:
+                operation = "aggregate"
 
         clarification_questions: list[str] = []
         if is_time_ambiguous or time_range is None:
@@ -229,6 +293,7 @@ class IntentParser:
                         "assets": intent.asset_ids,
                         "metrics": intent.metric_terms,
                         "group_by": intent.group_by,
+                        "llm_used": llm_used,
                         "time_range": {
                             "start": intent.time_range.start.isoformat(),
                             "end": intent.time_range.end.isoformat(),
@@ -238,6 +303,27 @@ class IntentParser:
                     },
                 )
         return state
+
+    async def _llm_intent(self, state: QueryState) -> dict | None:
+        from src.smart_data.infrastructure.llm import LLMError, get_llm_client
+        from src.smart_data.infrastructure.llm.prompts import load_prompt
+
+        client = get_llm_client()
+        if client is None:
+            return None
+        try:
+            return await client.chat_json(
+                [
+                    {"role": "system", "content": load_prompt("intent")},
+                    {"role": "user", "content": f"用户问题：{state.question}"},
+                ],
+                temperature=0.0,
+                max_tokens=1024,
+                trace_id=state.trace_id,
+                operation="intent",
+            )
+        except (LLMError, Exception):
+            return None
 
 
 def _normalize_asset(token: str) -> str | None:

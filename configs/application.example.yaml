@@ -7,6 +7,15 @@ service:
   cors_origins:
     - "*"
 
+llm:
+  enabled: true
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-flash
+  api_key: EMPTY
+  timeout_seconds: 45.0
+  max_concurrency: 4
+  reasoning_effort: low
+
 mysql:
   dsn: mysql+pymysql://user:password@127.0.0.1:3306/gt_health
   pool_size: 10
